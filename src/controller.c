@@ -48,6 +48,7 @@
 #define PATH_HISTORY "/history"
 #define PATH_LEARN_SPAM "/learnspam"
 #define PATH_LEARN_HAM "/learnham"
+#define PATH_LEARN_FUZZ "/fuzzyadd"
 #define PATH_SAVE_ACTIONS "/saveactions"
 #define PATH_SAVE_SYMBOLS "/savesymbols"
 #define PATH_SAVE_MAP "/savemap"
@@ -56,7 +57,7 @@
 #define PATH_STAT "/stat"
 #define PATH_STAT_RESET "/statreset"
 #define PATH_COUNTERS "/counters"
-
+#define PATH_PUBLICKEY "/getpk"
 /* Graph colors */
 #define COLOR_CLEAN "#58A458"
 #define COLOR_PROBABLE_SPAM "#D67E7E"
@@ -68,6 +69,12 @@
 
 gpointer init_controller_worker (struct rspamd_config *cfg);
 void start_controller_worker (struct rspamd_worker *worker);
+
+/* Public key and Secret key declared global, So that can be
+	access by the learn and scan path
+*/
+rspamd_pk_t pk;
+rspamd_sk_t sk;
 
 worker_t controller_worker = {
 	"controller",                   /* Name */
@@ -419,19 +426,28 @@ rspamd_controller_handle_auth (struct rspamd_http_connection_entry *conn_ent,
 	int64_t uptime;
 	gulong data[4];
 	ucl_object_t *obj;
-
+	/*rspamd_pk_t pk;
+	rspamd_sk_t sk;
+	gchar *encoded_pk;*/
 	if (!rspamd_controller_check_password (conn_ent, session, msg, FALSE)) {
 		return 0;
 	}
 
 	obj = ucl_object_typed_new (UCL_OBJECT);
 	st = session->ctx->srv->stat;
+	/*
+	rspamd_cryptobox_keypair (pk, sk);
+
+	encoded_pk = rspamd_encode_base64(pk,strlen(pk),0,0); 
+	
+	msg_info("Public Key length: %s \n Public key Size : %d \n Public Key length: %d",pk,sizeof(pk),strlen(pk));
+	msg_info("Publick Key : %s \n encoded_pk size: %d \n encoded Public key length: %d ",encoded_pk,sizeof(encoded_pk),strlen(pk));
+	*/
 	data[0] = st->actions_stat[METRIC_ACTION_NOACTION];
 	data[1] = st->actions_stat[METRIC_ACTION_ADD_HEADER] +
 		st->actions_stat[METRIC_ACTION_REWRITE_SUBJECT];
 	data[2] = st->actions_stat[METRIC_ACTION_GREYLIST];
 	data[3] = st->actions_stat[METRIC_ACTION_REJECT];
-
 	/* Get uptime */
 	uptime = time (NULL) - session->ctx->start_time;
 
@@ -454,6 +470,9 @@ rspamd_controller_handle_auth (struct rspamd_http_connection_entry *conn_ent,
 	ucl_object_insert_key (obj,	   ucl_object_fromint (
 			st->messages_learned), "learned",  0, false);
 
+	/*ucl_object_insert_key (obj,	   ucl_object_fromlstring(
+		encoded_pk,strlen(encoded_pk)), "publickey",  0, false);
+	*/
 	rspamd_controller_send_ucl (conn_ent, obj);
 	ucl_object_unref (obj);
 
@@ -1045,6 +1064,7 @@ rspamd_controller_handle_learnspam (
 {
 	return rspamd_controller_handle_learn_common (conn_ent, msg, TRUE);
 }
+
 /*
  * Learn ham command handler:
  * request: /learnham
@@ -1058,6 +1078,77 @@ rspamd_controller_handle_learnham (
 	struct rspamd_http_message *msg)
 {
 	return rspamd_controller_handle_learn_common (conn_ent, msg, FALSE);
+}
+
+/*
+ * Learn ham command handler:
+ * request: /fuzzyadd
+ * headers: Password
+ * input: plaintext data
+ * reply: json {"success":true} or {"error":"error message"}
+ */
+static int
+rspamd_controller_handle_fuzzyadd (
+	struct rspamd_http_connection_entry *conn_ent,
+	struct rspamd_http_message *msg)
+{
+	struct rspamd_controller_session *session = conn_ent->ud;
+	struct rspamd_controller_worker_ctx *ctx;
+	struct rspamd_classifier_config *cl;
+	struct rspamd_task *task;
+
+	ctx = session->ctx;
+
+	if (!rspamd_controller_check_password (conn_ent, session, msg, TRUE)) {
+		return 0;
+	}
+
+	if (msg->body == NULL || msg->body->len == 0) {
+		msg_err ("got zero length body, cannot continue");
+		rspamd_controller_send_error (conn_ent,
+			400,
+			"Empty body is not permitted");
+		return 0;
+	}
+	//return rspamd_controller_handle_learn_common (conn_ent, msg, FALSE);
+}
+
+/*
+ * Learn ham command handler:
+ * request: /getpk
+ * headers: Password
+ * reply: json {"public_key":{base64 encoded public key}} or {"error":"error message"}
+ */
+static int
+rspamd_controller_handle_publickey (
+	struct rspamd_http_connection_entry *conn_ent,
+	struct rspamd_http_message *msg)
+{
+	struct rspamd_controller_session *session = conn_ent->ud;
+	gchar *encoded_pk;
+	ucl_object_t *obj;
+	
+	if (!rspamd_controller_check_password (conn_ent, session, msg, FALSE)) {
+		return 0;
+	}
+
+	obj = ucl_object_typed_new (UCL_OBJECT);
+
+	rspamd_cryptobox_keypair (pk, sk);	
+
+	encoded_pk = rspamd_encode_base64(pk,strlen(pk),0,0); 
+	
+	msg_info("Public Key  : %s \n Public key Size : %d \n Public Key length: %d",pk,sizeof(pk),strlen(pk));
+	msg_info("Encoded Publick Key : %s \n encoded_pk size: %d \n encoded Public key length: %d ",encoded_pk,sizeof(encoded_pk),strlen(encoded_pk));
+	
+	ucl_object_insert_key (obj,	   ucl_object_fromstring(
+		encoded_pk), "public_key",  0, false);
+
+	rspamd_controller_send_ucl (conn_ent, obj);
+	
+	ucl_object_unref (obj);
+
+	return 0;
 }
 
 /*
@@ -1221,18 +1312,12 @@ rspamd_controller_handle_saveactions (
 		}
 	}
 
-	if (dump_dynamic_config (ctx->cfg)) {
-		msg_info ("<%s> modified %d actions",
-			rspamd_inet_address_to_string (session->from_addr),
-			added);
+	dump_dynamic_config (ctx->cfg);
+	msg_info ("<%s> modified %d actions",
+		rspamd_inet_address_to_string (session->from_addr),
+		added);
 
-		rspamd_controller_send_string (conn_ent, "{\"success\":true}");
-	}
-	else {
-		rspamd_controller_send_error (conn_ent, 500, "Save error");
-	}
-
-	ucl_object_unref (obj);
+	rspamd_controller_send_string (conn_ent, "{\"success\":true}");
 
 	return 0;
 }
@@ -1338,24 +1423,12 @@ rspamd_controller_handle_savesymbols (
 		}
 	}
 
-	if (added > 0) {
-		if (dump_dynamic_config (ctx->cfg)) {
-			msg_info ("<%s> modified %d symbols",
-					rspamd_inet_address_to_string (session->from_addr),
-					added);
+	dump_dynamic_config (ctx->cfg);
+	msg_info ("<%s> modified %d symbols",
+			rspamd_inet_address_to_string (session->from_addr),
+			added);
 
-			rspamd_controller_send_string (conn_ent, "{\"success\":true}");
-		}
-		else {
-			rspamd_controller_send_error (conn_ent, 500, "Save error");
-		}
-	}
-	else {
-		msg_err ("no symbols to save");
-		rspamd_controller_send_error (conn_ent, 404, "No symbols to save");
-	}
-
-	ucl_object_unref (obj);
+	rspamd_controller_send_string (conn_ent, "{\"success\":true}");
 
 	return 0;
 }
@@ -1404,8 +1477,8 @@ rspamd_controller_handle_savemap (struct rspamd_http_connection_entry *conn_ent,
 	}
 
 	id = strtoul (idstr->str, &errstr, 10);
-	if (*errstr != '\0' && !g_ascii_isspace (*errstr)) {
-		msg_info ("invalid map id: %V", idstr);
+	if (*errstr != '\0' && g_ascii_isspace (*errstr)) {
+		msg_info ("invalid map id");
 		rspamd_controller_send_error (conn_ent, 400, "Map id is invalid");
 		return 0;
 	}
@@ -1910,6 +1983,9 @@ start_controller_worker (struct rspamd_worker *worker)
 		   PATH_LEARN_HAM,
 		rspamd_controller_handle_learnham);
 	rspamd_http_router_add_path (ctx->http,
+		   PATH_LEARN_FUZZ,
+		rspamd_controller_handle_fuzzyadd);
+	rspamd_http_router_add_path (ctx->http,
 		PATH_SAVE_ACTIONS,
 		rspamd_controller_handle_saveactions);
 	rspamd_http_router_add_path (ctx->http,
@@ -1933,6 +2009,9 @@ start_controller_worker (struct rspamd_worker *worker)
 	rspamd_http_router_add_path (ctx->http,
 			PATH_COUNTERS,
 		rspamd_controller_handle_counters);
+	rspamd_http_router_add_path (ctx->http,
+			PATH_PUBLICKEY,
+		rspamd_controller_handle_publickey);
 
 	if (ctx->key) {
 		rspamd_http_router_set_key (ctx->http, ctx->key);
