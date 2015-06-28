@@ -70,9 +70,12 @@
 gpointer init_controller_worker (struct rspamd_config *cfg);
 void start_controller_worker (struct rspamd_worker *worker);
 
-/* Public key and Secret key declared global, So that can be
-	access by the learn and scan path
-*/
+/* 
+ *	Public key and Secret key declared global, So that they can be
+ *	access by the learn and scan path after receiving the encrypted
+ *	text from the web interface.
+ *	TODO : Think of the logic if possible to declare these variable locally instead of globally.
+ */
 rspamd_pk_t pk;
 rspamd_sk_t sk;
 
@@ -1081,11 +1084,13 @@ rspamd_controller_handle_learnham (
 }
 
 /*
+ * 			[Incomplete State]
  * Learn ham command handler:
  * request: /fuzzyadd
  * headers: Password
  * input: plaintext data
  * reply: json {"success":true} or {"error":"error message"}
+ * TODO: Understand the client's way of doing this and replicating it here.
  */
 static int
 rspamd_controller_handle_fuzzyadd (
@@ -1114,7 +1119,7 @@ rspamd_controller_handle_fuzzyadd (
 }
 
 /*
- * Learn ham command handler:
+ * Send the Public Key on request :
  * request: /getpk
  * headers: Password
  * reply: json {"public_key":{base64 encoded public key}} or {"error":"error message"}
@@ -1136,7 +1141,15 @@ rspamd_controller_handle_publickey (
 
 	rspamd_cryptobox_keypair (pk, sk);	
 
-	encoded_pk = rspamd_encode_base64(pk,strlen(pk),0,0); 
+	/*	Usage of rspamd_encode_base64:
+	 *	in : input as it is generated public key from rspamd_cryptobox key pair
+	 *	inlen: strlen(pk) is convenient and sufficient,unless there is some rspamd_len function available for this ?
+	 *  str_len = 0 (I don't think split is required in our case)
+	 *	oultlen = 0, I don't understand what's the use of this at all ? I don't think it is even required as imo outlen is 
+	 *	generated variable and isn't required at all ?
+	 */
+	
+	encoded_pk = rspamd_encode_base64(pk,strlen(pk),0,0);
 	
 	msg_info("Public Key  : %s \n Public key Size : %d \n Public Key length: %d",pk,sizeof(pk),strlen(pk));
 	msg_info("Encoded Publick Key : %s \n encoded_pk size: %d \n encoded Public key length: %d ",encoded_pk,sizeof(encoded_pk),strlen(encoded_pk));
