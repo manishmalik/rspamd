@@ -58,6 +58,7 @@
 #define PATH_STAT_RESET "/statreset"
 #define PATH_COUNTERS "/counters"
 #define PATH_PUBLICKEY "/getpk"
+
 /* Graph colors */
 #define COLOR_CLEAN "#58A458"
 #define COLOR_PROBABLE_SPAM "#D67E7E"
@@ -432,6 +433,7 @@ rspamd_controller_handle_auth (struct rspamd_http_connection_entry *conn_ent,
 	/*rspamd_pk_t pk;
 	rspamd_sk_t sk;
 	gchar *encoded_pk;*/
+
 	if (!rspamd_controller_check_password (conn_ent, session, msg, FALSE)) {
 		return 0;
 	}
@@ -451,6 +453,7 @@ rspamd_controller_handle_auth (struct rspamd_http_connection_entry *conn_ent,
 		st->actions_stat[METRIC_ACTION_REWRITE_SUBJECT];
 	data[2] = st->actions_stat[METRIC_ACTION_GREYLIST];
 	data[3] = st->actions_stat[METRIC_ACTION_REJECT];
+
 	/* Get uptime */
 	uptime = time (NULL) - session->ctx->start_time;
 
@@ -1325,12 +1328,18 @@ rspamd_controller_handle_saveactions (
 		}
 	}
 
-	dump_dynamic_config (ctx->cfg);
-	msg_info ("<%s> modified %d actions",
-		rspamd_inet_address_to_string (session->from_addr),
-		added);
+	if (dump_dynamic_config (ctx->cfg)) {
+		msg_info ("<%s> modified %d actions",
+			rspamd_inet_address_to_string (session->from_addr),
+			added);
 
-	rspamd_controller_send_string (conn_ent, "{\"success\":true}");
+		rspamd_controller_send_string (conn_ent, "{\"success\":true}");
+	}
+	else {
+		rspamd_controller_send_error (conn_ent, 500, "Save error");
+	}
+
+	ucl_object_unref (obj);
 
 	return 0;
 }
@@ -1436,12 +1445,24 @@ rspamd_controller_handle_savesymbols (
 		}
 	}
 
-	dump_dynamic_config (ctx->cfg);
-	msg_info ("<%s> modified %d symbols",
-			rspamd_inet_address_to_string (session->from_addr),
-			added);
+	if (added > 0) {
+		if (dump_dynamic_config (ctx->cfg)) {
+			msg_info ("<%s> modified %d symbols",
+					rspamd_inet_address_to_string (session->from_addr),
+					added);
 
-	rspamd_controller_send_string (conn_ent, "{\"success\":true}");
+			rspamd_controller_send_string (conn_ent, "{\"success\":true}");
+		}
+		else {
+			rspamd_controller_send_error (conn_ent, 500, "Save error");
+		}
+	}
+	else {
+		msg_err ("no symbols to save");
+		rspamd_controller_send_error (conn_ent, 404, "No symbols to save");
+	}
+
+	ucl_object_unref (obj);
 
 	return 0;
 }
@@ -1490,8 +1511,8 @@ rspamd_controller_handle_savemap (struct rspamd_http_connection_entry *conn_ent,
 	}
 
 	id = strtoul (idstr->str, &errstr, 10);
-	if (*errstr != '\0' && g_ascii_isspace (*errstr)) {
-		msg_info ("invalid map id");
+	if (*errstr != '\0' && !g_ascii_isspace (*errstr)) {
+		msg_info ("invalid map id: %V", idstr);
 		rspamd_controller_send_error (conn_ent, 400, "Map id is invalid");
 		return 0;
 	}
