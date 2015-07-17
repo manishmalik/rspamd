@@ -898,6 +898,7 @@ cleanup_enomem:
 #endif
 
 #ifndef HAVE_PIDFILE
+extern gchar *__progname;
 static gint _rspamd_pidfile_remove (rspamd_pidfh_t *pfh, gint freeit);
 
 static gint

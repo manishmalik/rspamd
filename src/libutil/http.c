@@ -2191,7 +2191,12 @@ rspamd_http_print_key_component (guchar *data, gsize datalen,
 	gchar *b32;
 
 	if (how & RSPAMD_KEYPAIR_HUMAN) {
-		g_string_append_printf (res, "%s: ", description);
+		if (( how & RSPAMD_KEYPAIR_SHARE)) {
+			g_string_append_printf (res, "%s", description);	
+		}
+		else{
+			g_string_append_printf (res, "%s: ", description);;
+		}
 	}
 
 	if (how & RSPAMD_KEYPAIR_BASE32) {
@@ -2219,16 +2224,28 @@ rspamd_http_connection_print_key (gpointer key, guint how)
 	res = g_string_new (NULL);
 
 	if ((how & RSPAMD_KEYPAIR_PUBKEY)) {
-		rspamd_http_print_key_component (kp->pk, sizeof (kp->pk), res, how,
+		if (( how & RSPAMD_KEYPAIR_SHARE)) {
+			rspamd_http_print_key_component (kp->pk, sizeof (kp->pk), res, how,
+				"");	
+		}
+		else{
+			rspamd_http_print_key_component (kp->pk, sizeof (kp->pk), res, how,
 				"Public key");
+		}
 	}
 	if ((how & RSPAMD_KEYPAIR_PRIVKEY)) {
 		rspamd_http_print_key_component (kp->sk, sizeof (kp->sk), res, how,
 				"Private key");
 	}
 	if ((how & RSPAMD_KEYPAIR_ID)) {
-		rspamd_http_print_key_component (kp->id, RSPAMD_HTTP_KEY_ID_LEN, res, how,
+		if (( how & RSPAMD_KEYPAIR_SHARE)) {
+			rspamd_http_print_key_component (kp->id, RSPAMD_HTTP_KEY_ID_LEN, res, how,
+				"");	
+		}
+		else{
+			rspamd_http_print_key_component (kp->id, RSPAMD_HTTP_KEY_ID_LEN, res, how,
 				"Key ID");
+		}
 	}
 
 	return res;

@@ -58,7 +58,6 @@
 #define PATH_STAT_RESET "/statreset"
 #define PATH_COUNTERS "/counters"
 #define PATH_PUBLICKEY "/getpk"
-
 /* Graph colors */
 #define COLOR_CLEAN "#58A458"
 #define COLOR_PROBABLE_SPAM "#D67E7E"
@@ -71,14 +70,12 @@
 gpointer init_controller_worker (struct rspamd_config *cfg);
 void start_controller_worker (struct rspamd_worker *worker);
 
-/* 
- *	Public key and Secret key declared global, So that they can be
- *	access by the learn and scan path after receiving the encrypted
- *	text from the web interface.
- *	TODO : Think of the logic if possible to declare these variable locally instead of globally.
- */
+/* Public key and Secret key declared global, So that can be
+	access by the learn and scan path
+*/
 rspamd_pk_t pk;
 rspamd_sk_t sk;
+
 
 worker_t controller_worker = {
 	"controller",                   /* Name */
@@ -433,7 +430,6 @@ rspamd_controller_handle_auth (struct rspamd_http_connection_entry *conn_ent,
 	/*rspamd_pk_t pk;
 	rspamd_sk_t sk;
 	gchar *encoded_pk;*/
-
 	if (!rspamd_controller_check_password (conn_ent, session, msg, FALSE)) {
 		return 0;
 	}
@@ -453,7 +449,6 @@ rspamd_controller_handle_auth (struct rspamd_http_connection_entry *conn_ent,
 		st->actions_stat[METRIC_ACTION_REWRITE_SUBJECT];
 	data[2] = st->actions_stat[METRIC_ACTION_GREYLIST];
 	data[3] = st->actions_stat[METRIC_ACTION_REJECT];
-
 	/* Get uptime */
 	uptime = time (NULL) - session->ctx->start_time;
 
@@ -1068,6 +1063,47 @@ rspamd_controller_handle_learnspam (
 	struct rspamd_http_connection_entry *conn_ent,
 	struct rspamd_http_message *msg)
 {
+	/*
+	GString *client_pk64,*nonce64;
+	guchar *cPublicKey,*nonce,*cipher,*mac;
+	gsize pk_len,nonce_len,ctx_len;
+	gint i;
+	struct rspamd_http_connection *conn = (struct rspamd_http_connection *)conn_ent->conn;
+	struct rspamd_http_connection_private *priv = conn->priv;
+	struct rspamd_http_keypair *local_key = (struct rspamd_http_keypair *) priv->local_key;
+
+	client_pk64 = rspamd_http_message_find_header (msg, "Publickey");
+	nonce64 = rspamd_http_message_find_header (msg, "Nonce");
+
+	cPublicKey = g_base64_decode(client_pk64->str,&pk_len);
+	nonce = g_base64_decode(nonce64->str,&nonce_len);
+	cipher = g_base64_decode(msg->body->str,&ctx_len);
+	//sig = g_malloc(16);
+	memcpy(mac,&cipher[ctx_len - 16],16);
+	//memmov(cipher,cipher,ctx_len - 16);
+	//mac[0]=123;
+	// MAC is appended to the cipher text
+	if (!rspamd_cryptobox_decrypt_inplace(cipher,ctx_len - rspamd_cryptobox_MACBYTES,
+		nonce,cPublicKey,local_key->sk,mac)!=0)
+	{
+		msg_info("Cannot Verify message");
+	}
+	msg_info("Secret key length : %d",strlen(sk));
+	for(i=0;i<strlen(sk);i++)
+		msg_info("Secret Key : %d",sk[i]);
+	for(i=0;i<strlen(mac);i++)
+		msg_info("Signature : %d ",mac[i]);
+	msg_info("Public Key from the web-client: %s",client_pk64->str);
+	for(i=0;i<strlen(cPublicKey);i++)
+		msg_info("Public Key after decoding : %d ",cPublicKey[i]);
+	
+	msg_info("Nonce from the web-client: %s",nonce64->str);
+
+	msg_info("Body of the received message : %s \n Cipher Text length : %d , %d (size) ",msg->body->str,strlen(cipher),ctx_len);
+	for(i=0;i<strlen(cipher);i++)
+		msg_info("Cipher Text after decoding : %d",cipher[i]);
+	*/
+	msg_info("SPam : %s",msg->body);
 	return rspamd_controller_handle_learn_common (conn_ent, msg, TRUE);
 }
 
@@ -1087,13 +1123,11 @@ rspamd_controller_handle_learnham (
 }
 
 /*
- * 			[Incomplete State]
  * Learn ham command handler:
  * request: /fuzzyadd
  * headers: Password
  * input: plaintext data
  * reply: json {"success":true} or {"error":"error message"}
- * TODO: Understand the client's way of doing this and replicating it here.
  */
 static int
 rspamd_controller_handle_fuzzyadd (
@@ -1122,7 +1156,7 @@ rspamd_controller_handle_fuzzyadd (
 }
 
 /*
- * Send the Public Key on request :
+ * Learn ham command handler:
  * request: /getpk
  * headers: Password
  * reply: json {"public_key":{base64 encoded public key}} or {"error":"error message"}
@@ -1133,33 +1167,47 @@ rspamd_controller_handle_publickey (
 	struct rspamd_http_message *msg)
 {
 	struct rspamd_controller_session *session = conn_ent->ud;
-	gchar *encoded_pk;
+	struct rspamd_http_connection *conn = conn_ent->conn;
+	gchar *encoded_pk,*encoded_keyid;
+	gpointer serv_key;
 	ucl_object_t *obj;
-	
+	GString *sPublic,*keyid;
+
+	serv_key = rspamd_http_connection_gen_key();
+	rspamd_http_connection_set_key(conn_ent->conn,serv_key);
+
+	sPublic = rspamd_http_connection_print_key (serv_key,
+			RSPAMD_KEYPAIR_PUBKEY | RSPAMD_KEYPAIR_SHARE);
+	keyid = rspamd_http_connection_print_key (serv_key,
+			RSPAMD_KEYPAIR_ID | RSPAMD_KEYPAIR_SHARE);
+
+	msg_info("Public : %s \n length:  %d ",sPublic->str,strlen(sPublic->str));
+
+	msg_info("keyid : %s \n length: %d",keyid->str,strlen(keyid->str));
+
+	encoded_pk = rspamd_encode_base64(sPublic->str,strlen(sPublic->str),0,0);
+
+	encoded_keyid = rspamd_encode_base64(keyid->str,strlen(keyid->str),0,0);
+
 	if (!rspamd_controller_check_password (conn_ent, session, msg, FALSE)) {
 		return 0;
 	}
 
 	obj = ucl_object_typed_new (UCL_OBJECT);
 
-	rspamd_cryptobox_keypair (pk, sk);	
+	//rspamd_cryptobox_keypair (pk, sk);	
 
-	/*	Usage of rspamd_encode_base64:
-	 *	in : input as it is generated public key from rspamd_cryptobox key pair
-	 *	inlen: strlen(pk) is convenient and sufficient,unless there is some rspamd_len function available for this ?
-	 *  str_len = 0 (I don't think split is required in our case)
-	 *	oultlen = 0, I don't understand what's the use of this at all ? I don't think it is even required as imo outlen is 
-	 *	generated variable and isn't required at all ?
-	 */
+	//encoded_pk = rspamd_encode_base64(pk,strlen(pk),0,0); 
 	
-	encoded_pk = rspamd_encode_base64(pk,strlen(pk),0,0);
-	
-	msg_info("Public Key  : %s \n Public key Size : %d \n Public Key length: %d",pk,sizeof(pk),strlen(pk));
-	msg_info("Encoded Publick Key : %s \n encoded_pk size: %d \n encoded Public key length: %d ",encoded_pk,sizeof(encoded_pk),strlen(encoded_pk));
+	//msg_info("Public Key  : %s \n Public key Size : %d \n Public Key length: %d",pk,sizeof(pk),strlen(pk));
+	//msg_info("Encoded Publick Key : %s \n encoded_pk size: %d \n encoded Public key length: %d ",encoded_pk,sizeof(encoded_pk),strlen(encoded_pk));
 	
 	ucl_object_insert_key (obj,	   ucl_object_fromstring(
 		encoded_pk), "public_key",  0, false);
 
+	ucl_object_insert_key(obj,ucl_object_fromstring(
+		encoded_keyid),"key_id",0,false);
+	
 	rspamd_controller_send_ucl (conn_ent, obj);
 	
 	ucl_object_unref (obj);
@@ -1328,18 +1376,12 @@ rspamd_controller_handle_saveactions (
 		}
 	}
 
-	if (dump_dynamic_config (ctx->cfg)) {
-		msg_info ("<%s> modified %d actions",
-			rspamd_inet_address_to_string (session->from_addr),
-			added);
+	dump_dynamic_config (ctx->cfg);
+	msg_info ("<%s> modified %d actions",
+		rspamd_inet_address_to_string (session->from_addr),
+		added);
 
-		rspamd_controller_send_string (conn_ent, "{\"success\":true}");
-	}
-	else {
-		rspamd_controller_send_error (conn_ent, 500, "Save error");
-	}
-
-	ucl_object_unref (obj);
+	rspamd_controller_send_string (conn_ent, "{\"success\":true}");
 
 	return 0;
 }
@@ -1445,24 +1487,12 @@ rspamd_controller_handle_savesymbols (
 		}
 	}
 
-	if (added > 0) {
-		if (dump_dynamic_config (ctx->cfg)) {
-			msg_info ("<%s> modified %d symbols",
-					rspamd_inet_address_to_string (session->from_addr),
-					added);
+	dump_dynamic_config (ctx->cfg);
+	msg_info ("<%s> modified %d symbols",
+			rspamd_inet_address_to_string (session->from_addr),
+			added);
 
-			rspamd_controller_send_string (conn_ent, "{\"success\":true}");
-		}
-		else {
-			rspamd_controller_send_error (conn_ent, 500, "Save error");
-		}
-	}
-	else {
-		msg_err ("no symbols to save");
-		rspamd_controller_send_error (conn_ent, 404, "No symbols to save");
-	}
-
-	ucl_object_unref (obj);
+	rspamd_controller_send_string (conn_ent, "{\"success\":true}");
 
 	return 0;
 }
@@ -1511,8 +1541,8 @@ rspamd_controller_handle_savemap (struct rspamd_http_connection_entry *conn_ent,
 	}
 
 	id = strtoul (idstr->str, &errstr, 10);
-	if (*errstr != '\0' && !g_ascii_isspace (*errstr)) {
-		msg_info ("invalid map id: %V", idstr);
+	if (*errstr != '\0' && g_ascii_isspace (*errstr)) {
+		msg_info ("invalid map id");
 		rspamd_controller_send_error (conn_ent, 400, "Map id is invalid");
 		return 0;
 	}

@@ -343,7 +343,6 @@ rspamd_cryptobox_decrypt_inplace (guchar *data, gsize len,
 {
 	guchar nm[rspamd_cryptobox_NMBYTES];
 	gboolean ret;
-
 	rspamd_cryptobox_nm (nm, pk, sk);
 	ret = rspamd_cryptobox_decrypt_nm_inplace (data, len, nonce, nm, sig);
 
