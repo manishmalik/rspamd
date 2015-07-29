@@ -159,7 +159,50 @@ create_constrainted_split (struct rspamd_cryptobox_segment *seg, int mseg,
 
 	return used;
 }
+void test_predifined_case(void)
+{
+	guchar nonce[] = {227,151,41,137,191,238,172,191,15,194,173,236,31,251,122,91,69,177,81,65,178,202,244,184};
+	guchar ctx1[] = {71,44,215,255,50,46,219,43,139,247,159,106,250,94,213,71};
+	guchar mac[] = {59,255,197,155,66,151,167,219,3,134,67,197,191,78,111,232};
+	guchar pk12[] = {231,181,65,201,223,177,84,124,46,188,67,15,210,142,112,21,197,86,73,118,225,254,88,148,244,101,68,230,184,158,87,4};
+	guchar sk12[] = {104,17,235,221,214,25,30,219,122,129,252,117,191,31,70,55,202,222,235,189,82,37,209,177,173,66,22,58,132,113,97,115};
+	guchar pk21[] = {93,85,4,76,136,253,180,212,246,186,173,91,7,136,111,161,134,247,14,107,167,45,250,5,214,247,193,69,18,129,255,71};
+	guchar sk21[] = {6, 233, 12, 252, 46, 153, 223, 121, 177, 65, 100, 99, 165, 136, 0, 8, 160, 83, 81, 19, 49, 154, 40, 131, 227, 41, 214, 214, 127, 13, 80, 81};
+	guchar pt[] = {77, 97, 110, 105, 115, 104, 32, 77, 97, 108, 105, 107, 33, 32, 59, 41};
+	guchar nm[rspamd_cryptobox_NMBYTES];
+	guchar s[rspamd_cryptobox_PKBYTES];
+	guchar sig[rspamd_cryptobox_MACBYTES];
+	guchar subkey[64];
+	gint i;
 
+	//rspamd_cryptobox_encrypt_inplace(pt,strlen(pt),nonce,pk12,sk21,sig);
+	msg_info("CTX: ");
+	for(i=0;i<sizeof(ctx1);i++)
+		msg_info("%d",ctx1[i]);
+	msg_info("MAC: ");
+	for(i=0;i<rspamd_cryptobox_MACBYTES;i++)
+		msg_info("%d",mac[i]);
+	/*subkey = rspamd_temporary(pt,sizeof(pt),nonce,pk12,sk21);
+	msg_info("Subkey :");
+	for (i = 0; i < 64; i++)
+	{
+		msg_info("%d",subkey[i]);
+	}*/
+	rspamd_cryptobox_nm (nm, pk21, sk12);
+	/*curve25519 (s, sk12, pk21);
+	msg_info("curve25519 : ");
+	for(i=0;i<rspamd_cryptobox_PKBYTES;i++)
+		msg_info("%d",s[i]);*/
+
+	msg_info("Nm : ");
+	for(i=0;i<rspamd_cryptobox_NMBYTES;i++)
+		msg_info("%d",nm[i]);
+
+	if(rspamd_cryptobox_decrypt_inplace(ctx1,sizeof(ctx1),nonce,pk21,sk12,mac)==true)
+		msg_info("Passed");
+	else
+		msg_info("Failed");
+}
 void
 rspamd_cryptobox_test_func (void)
 {
@@ -186,6 +229,8 @@ rspamd_cryptobox_test_func (void)
 	t2 = rspamd_get_ticks ();
 	check_result (key, nonce, mac, begin, end);
 
+	test_predifined_case();
+	return 0;
 	msg_info ("baseline encryption: %.6f", t2 - t1);
 	/* A single chunk as vector */
 	seg[0].data = begin;

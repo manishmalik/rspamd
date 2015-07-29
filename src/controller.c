@@ -1156,7 +1156,7 @@ rspamd_controller_handle_fuzzyadd (
 }
 
 /*
- * Learn ham command handler:
+ * Get Public key command handler:
  * request: /getpk
  * headers: Password
  * reply: json {"public_key":{base64 encoded public key}} or {"error":"error message"}
@@ -1167,34 +1167,56 @@ rspamd_controller_handle_publickey (
 	struct rspamd_http_message *msg)
 {
 	struct rspamd_controller_session *session = conn_ent->ud;
-	struct rspamd_http_connection *conn = conn_ent->conn;
+	//struct rspamd_http_connection *conn = conn_ent->conn;
 	gchar *encoded_pk,*encoded_keyid;
-	gpointer serv_key;
+	//gpointer serv_key;
 	ucl_object_t *obj;
-	GString *sPublic,*keyid;
+	guchar *sPublic,*keyid,*sSecret;
+	gint i;
 
-	serv_key = rspamd_http_connection_gen_key();
-	rspamd_http_connection_set_key(conn_ent->conn,serv_key);
-
+	//serv_key = rspamd_http_connection_gen_key();
+	//conn_ent->rt->key = serv_key;
+	//rspamd_http_router_set_key(conn_ent->rt,serv_key);
+	sPublic = rspamd_http_connection_return_key(conn_ent->conn->priv,RSPAMD_KEYPAIR_PUBKEY);
+	keyid = rspamd_http_connection_return_key(conn_ent->conn->priv,RSPAMD_KEYPAIR_ID);
+	sSecret = rspamd_http_connection_return_key(conn_ent->conn->priv,RSPAMD_KEYPAIR_PRIVKEY);
+	/*
 	sPublic = rspamd_http_connection_print_key (serv_key,
 			RSPAMD_KEYPAIR_PUBKEY | RSPAMD_KEYPAIR_SHARE);
 	keyid = rspamd_http_connection_print_key (serv_key,
 			RSPAMD_KEYPAIR_ID | RSPAMD_KEYPAIR_SHARE);
+	sSecret = rspamd_http_connection_print_key(serv_key,
+			RSPAMD_KEYPAIR_PRIVKEY | RSPAMD_KEYPAIR_SHARE);
+	*/
+	if(sPublic==NULL)
+		msg_info("Priv key is not set");
 
-	msg_info("Public : %s \n length:  %d ",sPublic->str,strlen(sPublic->str));
+	msg_info("PK :");
+	for(i=0;i<rspamd_cryptobox_PKBYTES;i++);
+		msg_info("%d. %d",i,sPublic[i]);
+	
+	msg_info("SK :");
+	for(i=0;i<rspamd_cryptobox_SKBYTES;i++)
+		msg_info("%d",sSecret[i]);
 
-	msg_info("keyid : %s \n length: %d",keyid->str,strlen(keyid->str));
+	msg_info("Public : %s \n length:  %d ",sPublic,strlen(sPublic));
 
-	encoded_pk = rspamd_encode_base64(sPublic->str,strlen(sPublic->str),0,0);
+	msg_info("keyid : %s \n length: %d",keyid,strlen(keyid));
 
-	encoded_keyid = rspamd_encode_base64(keyid->str,strlen(keyid->str),0,0);
+	encoded_pk = rspamd_encode_base64(sPublic,rspamd_cryptobox_PKBYTES,0,0);
+	if(encoded_pk==NULL)
+		msg_info("sPublic Input is invalid for the base64 encoding");
+	encoded_keyid = rspamd_encode_base64(keyid,BLAKE2B_OUTBYTES,0,0);
+	if(encoded_keyid==NULL)
+		msg_info("keyid Input is invalid for the base64 encoding");
 
 	if (!rspamd_controller_check_password (conn_ent, session, msg, FALSE)) {
 		return 0;
 	}
 
 	obj = ucl_object_typed_new (UCL_OBJECT);
-
+	if(obj==NULL)
+		msg_err("Failed to create UCL object");
 	//rspamd_cryptobox_keypair (pk, sk);	
 
 	//encoded_pk = rspamd_encode_base64(pk,strlen(pk),0,0); 
@@ -2077,7 +2099,9 @@ start_controller_worker (struct rspamd_worker *worker)
 			PATH_PUBLICKEY,
 		rspamd_controller_handle_publickey);
 
+	ctx->key = rspamd_http_connection_gen_key();
 	if (ctx->key) {
+		msg_info("Key is set");
 		rspamd_http_router_set_key (ctx->http, ctx->key);
 	}
 

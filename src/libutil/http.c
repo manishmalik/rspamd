@@ -411,43 +411,57 @@ rspamd_http_parse_key (GString *data, struct rspamd_http_connection *conn,
 		struct rspamd_http_connection_private *priv)
 {
 	guchar *decoded_id, *decoded_key;
-	const gchar *eq_pos;
+	const gchar *eq_pos,*temp;
 	gsize id_len, key_len;
 	struct rspamd_http_keypair *kp;
 
 	if (priv->local_key == NULL) {
 		/* In this case we cannot do anything, e.g. we cannot decrypt payload */
+		msg_info("Local key pair not loaded");
 		priv->encrypted = TRUE;
 	}
 	else {
 		/* Check sanity of what we have */
-		eq_pos = memchr (data->str, '=', data->len);
-		if (eq_pos != NULL) {
-			decoded_id = rspamd_decode_base32 (data->str, eq_pos - data->str,
-					&id_len);
-			decoded_key = rspamd_decode_base32 (eq_pos + 1, data->str + data->len -
-					eq_pos - 1, &key_len);
-			if (decoded_id != NULL && decoded_key != NULL) {
-				if (id_len >= RSPAMD_HTTP_KEY_ID_LEN  &&
-						key_len >= sizeof (kp->pk)) {
-					if (memcmp (priv->local_key->id, decoded_id,
-							RSPAMD_HTTP_KEY_ID_LEN) == 0) {
-						kp = g_slice_alloc (sizeof (*kp));
-						REF_INIT_RETAIN (kp, rspamd_http_keypair_dtor);
-						memcpy (kp->pk, decoded_key, sizeof (kp->pk));
-						priv->msg->peer_key = kp;
 
-						if (conn->cache && priv->msg->peer_key) {
-							rspamd_keypair_cache_process (conn->cache,
-									priv->local_key, priv->msg->peer_key);
-						}
+		/*Because '=' does appear as padding in base64 encoding*/
+		eq_pos = memchr (data->str, '$', data->len);
+		if(eq_pos!=NULL){
+			//*(eq_pos - 1) = NULL;
+			msg_info("It's inside $ stuff ;) ");
+			memcpy(temp,data->str,eq_pos-data->str);
+			decoded_id = g_base64_decode(temp,&id_len);
+			decoded_key = g_base64_decode(eq_pos+1,&key_len);
+		}
+		else{
+				msg_info("It's inside = stuff ;) ");
+				eq_pos = memchr (data->str, '=', data->len);
+				if (eq_pos != NULL) {
+					decoded_id = rspamd_decode_base32 (data->str, eq_pos - data->str,
+							&id_len);
+					decoded_key = rspamd_decode_base32 (eq_pos + 1, data->str + data->len -
+							eq_pos - 1, &key_len);
+				}
+			}
+		if (decoded_id != NULL && decoded_key != NULL) {
+			if (id_len >= RSPAMD_HTTP_KEY_ID_LEN  &&
+			key_len >= sizeof (kp->pk)) {
+				if (memcmp (priv->local_key->id, decoded_id,
+				RSPAMD_HTTP_KEY_ID_LEN) == 0) {
+					kp = g_slice_alloc (sizeof (*kp));
+					REF_INIT_RETAIN (kp, rspamd_http_keypair_dtor);
+					memcpy (kp->pk, decoded_key, sizeof (kp->pk));
+					priv->msg->peer_key = kp;
+		
+					if (conn->cache && priv->msg->peer_key) {
+						rspamd_keypair_cache_process (conn->cache,
+						priv->local_key, priv->msg->peer_key);
 					}
 				}
 			}
-			priv->encrypted = TRUE;
-			g_free (decoded_key);
-			g_free (decoded_id);
 		}
+		priv->encrypted = TRUE;
+		g_free (decoded_key);
+		g_free (decoded_id);
 	}
 }
 
@@ -462,6 +476,7 @@ rspamd_http_check_special_header (struct rspamd_http_connection *conn,
 	}
 	else if (g_ascii_strncasecmp (priv->header->name->str, key_header,
 			priv->header->name->len) == 0) {
+		//msg_info("Parsing key ! ");
 		rspamd_http_parse_key (priv->header->value, conn, priv);
 	}
 }
@@ -666,14 +681,43 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 	struct rspamd_http_header *hdr, *hdrtmp;
 	struct http_parser decrypted_parser;
 	struct http_parser_settings decrypted_cb;
+	gint i;
 
 	nonce = msg->body->str;
 	m = msg->body->str + rspamd_cryptobox_NONCEBYTES +
 			rspamd_cryptobox_MACBYTES;
 	dec_len = msg->body->len - rspamd_cryptobox_NONCEBYTES -
 			rspamd_cryptobox_MACBYTES;
+	/* Temporary check ! remove it immediately after checking ! */
+	//conn->cache = FALSE;
+	if(priv->local_key->nonce == NULL)
+		msg_info("First time");
+	msg_info("Msg Length : %d",msg->body->len);
+	msg_info("Server's Public key : ");
+	for(i=0;i<rspamd_cryptobox_PKBYTES;i++)
+		msg_info("%d",priv->local_key->pk[i]);
+	msg_info("Secret key: ");
+	for(i=0;i<rspamd_cryptobox_SKBYTES;i++)
+		msg_info("%d",priv->local_key->sk[i]);
+	msg_info("Nonce: ");
+	for(i=0;i<rspamd_cryptobox_NONCEBYTES;i++)
+		msg_info("%d",nonce[i]);
+	msg_info("MAC: ");
+	for(i=0;i<rspamd_cryptobox_MACBYTES;i++)
+		msg_info("%d",m[i - rspamd_cryptobox_MACBYTES]);
+	msg_info("Cipher text: ");
+	for(i=0;i<dec_len;i++)
+		msg_info("%d",m[i]);
+
+	msg_err("Client's Public:");
+	for(i=0;i<rspamd_cryptobox_PKBYTES;i++)
+		msg_err("%d",peer_key->pk[i]);
 
 	if (conn->cache) {
+		msg_info("At the wrong place");
+		msg_info("Nm: ");
+		for(i=0;i<rspamd_cryptobox_NMBYTES;i++)
+			msg_info("%d",peer_key->nm[i]);
 		if (!rspamd_cryptobox_decrypt_nm_inplace (m, dec_len, nonce,
 				peer_key->nm, m - rspamd_cryptobox_MACBYTES) != 0) {
 			msg_err ("cannot verify encrypted message");
@@ -681,6 +725,7 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 		}
 	}
 	else {
+		msg_err("At the right place");
 		if (!rspamd_cryptobox_decrypt_inplace (m, dec_len, nonce,
 				peer_key->pk, priv->local_key->sk,
 				m - rspamd_cryptobox_MACBYTES) != 0) {
@@ -688,7 +733,9 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 			return -1;
 		}
 	}
-
+	msg_info("Decrypted Message : ");
+	for(i=0;i<dec_len;i++)
+		msg_info("%d",m[i]);
 	/* Cleanup message */
 	DL_FOREACH_SAFE (msg->headers, hdr, hdrtmp) {
 		g_string_free (hdr->combined, TRUE);
@@ -734,14 +781,26 @@ rspamd_http_on_message_complete (http_parser * parser)
 	struct rspamd_http_connection_private *priv;
 	int ret = 0;
 	struct rspamd_http_keypair *peer_key = NULL;
+	gchar *err_msg;
 
 	priv = conn->priv;
+
+	/*TODO: Add a function such as is_base64() to check if it's base64 or not ? */
+
+	priv->msg->body->str = g_base64_decode(priv->msg->body->str,&priv->msg->body->len);
 
 	if ((conn->opts & RSPAMD_HTTP_BODY_PARTIAL) == 0 && priv->encrypted) {
 		if (priv->local_key == NULL || priv->msg->peer_key == NULL ||
 				priv->msg->body->len < rspamd_cryptobox_NONCEBYTES +
 				rspamd_cryptobox_MACBYTES) {
 			msg_err ("cannot decrypt message");
+			if(priv->local_key == NULL)
+				msg_err(" local_key unavailable");
+			if(priv->msg->peer_key == NULL)
+				msg_err(" peer_key unavailable");
+			if(priv->msg->body->len < rspamd_cryptobox_NONCEBYTES +
+				rspamd_cryptobox_MACBYTES)
+				msg_err("Length error");
 			return -1;
 		}
 
@@ -2234,8 +2293,14 @@ rspamd_http_connection_print_key (gpointer key, guint how)
 		}
 	}
 	if ((how & RSPAMD_KEYPAIR_PRIVKEY)) {
-		rspamd_http_print_key_component (kp->sk, sizeof (kp->sk), res, how,
+		if (( how & RSPAMD_KEYPAIR_SHARE)) {
+			rspamd_http_print_key_component (kp->sk, sizeof (kp->sk), res, how,
+				"");	
+		}
+		else{
+			rspamd_http_print_key_component (kp->sk, sizeof (kp->sk), res, how,
 				"Private key");
+		}
 	}
 	if ((how & RSPAMD_KEYPAIR_ID)) {
 		if (( how & RSPAMD_KEYPAIR_SHARE)) {
@@ -2317,4 +2382,20 @@ rspamd_http_connection_make_peer_key (const gchar *key)
 	g_free (pk_decoded);
 
 	return kp;
+}
+
+guchar *
+rspamd_http_connection_return_key (struct rspamd_http_connection_private *priv, guint how)
+{
+	//struct rspamd_http_keypair *kp = (struct rspamd_http_keypair *)rt->key;
+
+	if ((how & RSPAMD_KEYPAIR_PUBKEY)){
+		return &priv->local_key->pk;
+	}
+	if ((how & RSPAMD_KEYPAIR_PRIVKEY)){
+		return &priv->local_key->sk;
+	}
+	if ((how & RSPAMD_KEYPAIR_ID)) {
+		return &priv->local_key->id;
+	}
 }

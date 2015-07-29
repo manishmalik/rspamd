@@ -442,3 +442,20 @@ rspamd_cryptobox_pbkdf(const char *pass, gsize pass_len,
 
 	return TRUE;
 }
+
+// guchar * rspamd_temporary(guchar *data, gsize len,
+// 		const rspamd_nonce_t nonce,const rspamd_pk_t pk, const rspamd_sk_t sk )
+// {
+// 	poly1305_state mac_ctx;
+// 	guchar	 subkey[CHACHA_BLOCKBYTES];
+// 	chacha_state s;
+// 	gsize r;
+// 	guchar nm[rspamd_cryptobox_NMBYTES];
+
+// 	rspamd_cryptobox_nm (nm, pk, sk);
+// 	xchacha_init (&s, (const chacha_key *)nm, (const chacha_iv24 *)nonce, 20);
+// 	memset (subkey, 0, sizeof (subkey));
+// 	chacha_update (&s, subkey, subkey, sizeof (subkey));
+
+// 	return subkey;
+// }

@@ -49,8 +49,8 @@ struct rspamd_stat_sqlite3_rt {
 	struct rspamd_stat_sqlite3_ctx *ctx;
 	struct rspamd_task *task;
 	struct rspamd_stat_sqlite3_db *db;
-	gint64 user_id;
-	gint64 lang_id;
+	const gchar *user;
+	const gchar *language;
 };
 
 static const char *create_tables_sql =
@@ -67,8 +67,8 @@ static const char *create_tables_sql =
 		");"
 		"CREATE TABLE tokens("
 		"token INTEGER NOT NULL,"
-		"user INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
-		"language INTEGER NOT NULL REFERENCES languages(id) ON DELETE CASCADE,"
+		"user INTEGER REFERENCES users(id) ON DELETE CASCADE,"
+		"language INTEGER REFERENCES languages(id) ON DELETE CASCADE,"
 		"value INTEGER,"
 		"CONSTRAINT tid UNIQUE (token, user, language) ON CONFLICT REPLACE"
 		");"
@@ -130,16 +130,15 @@ static struct rspamd_sqlite3_prstmt {
 		.sql = "SELECT value FROM tokens "
 				"LEFT JOIN languages ON tokens.language=languages.id "
 				"LEFT JOIN users ON tokens.user=users.id "
-				"WHERE token=?1 AND (users.id=?2 OR users.id=0) "
-				"AND (languages.id=?3 OR languages.id=0);",
+				"WHERE token=?1 AND users.name=?2 AND languages.name=?3;",
 		.stmt = NULL,
-		.args = "III",
+		.args = "ITT",
 		.result = SQLITE_ROW,
 		.ret = "I"
 	},
 	{
 		.idx = RSPAMD_STAT_BACKEND_SET_TOKEN,
-		.sql = "INSERT OR REPLACE INTO tokens (token, user, language, value) "
+		.sql = "INSERT OR REPLACE INTO tokens(token, user, language, value)"
 				"VALUES (?1, ?2, ?3, ?4);",
 		.stmt = NULL,
 		.args = "IIII",
@@ -235,7 +234,7 @@ rspamd_sqlite3_run_prstmt (struct rspamd_stat_sqlite3_db *db, int idx, ...)
 	va_start (ap, idx);
 	nargs = 1;
 
-	for (i = 0, rowid = 1; argtypes[i] != '\0'; i ++) {
+	for (i = 0, rowid = 1; argtypes[i] != '\0'; i ++, rowid ++) {
 		switch (argtypes[i]) {
 		case 'T':
 
@@ -333,15 +332,9 @@ rspamd_sqlite3_opendb (const gchar *path, const ucl_object_t *opts,
 
 	if ((rc = sqlite3_open_v2 (path, &sqlite,
 			flags, NULL)) != SQLITE_OK) {
-#if SQLITE_VERSION_NUMBER >= 3008000
 		g_set_error (err, rspamd_sqlite3_quark (),
 			rc, "cannot open sqlite db %s: %s",
 			path, sqlite3_errstr (rc));
-#else
-		g_set_error (err, rspamd_sqlite3_quark (),
-			rc, "cannot open sqlite db %s: %d",
-			path, rc);
-#endif
 
 		return NULL;
 	}
@@ -499,7 +492,7 @@ rspamd_sqlite3_runtime (struct rspamd_task *task,
 	bk = g_hash_table_lookup (ctx->files, stcf);
 
 	if (bk) {
-		rt = rspamd_mempool_alloc0 (task->task_pool, sizeof (*rt));
+		rt = rspamd_mempool_alloc (task->task_pool, sizeof (*rt));
 		rt->ctx = ctx;
 		rt->db = bk;
 		rt->task = task;
@@ -535,7 +528,7 @@ rspamd_sqlite3_process_token (struct rspamd_task *task, struct token_node_s *tok
 
 	/* TODO: language and user support */
 	if (rspamd_sqlite3_run_prstmt (bk, RSPAMD_STAT_BACKEND_GET_TOKEN,
-			idx, rt->user_id, rt->lang_id, &iv) == SQLITE_OK) {
+			idx, SQLITE3_DEFAULT, SQLITE3_DEFAULT, &iv) == SQLITE_OK) {
 		res->value = iv;
 	}
 	else {
@@ -578,7 +571,7 @@ rspamd_sqlite3_learn_token (struct rspamd_task *task, struct token_node_s *tok,
 	memcpy (&idx, tok->data, sizeof (idx));
 
 	if (rspamd_sqlite3_run_prstmt (bk, RSPAMD_STAT_BACKEND_SET_TOKEN,
-				idx, rt->user_id, rt->lang_id, iv) == SQLITE_OK) {
+				idx, 0, 0, iv) == SQLITE_OK) {
 		return FALSE;
 	}
 
