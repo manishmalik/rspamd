@@ -34,7 +34,10 @@
 #include "cryptobox.h"
 #include <limits.h>
 
+
 #define ENCRYPTED_VERSION " HTTP/1.0"
+#define DEFAULT_CACHE_SIZE 2048
+#define DEFAULT_CACHE_MAXAGE 86400
 
 struct rspamd_http_connection_private {
 	struct _rspamd_http_privbuf {
@@ -44,6 +47,8 @@ struct rspamd_http_connection_private {
 	gboolean new_header;
 	gboolean encrypted;
 	gpointer peer_key;
+	rspamd_lru_hash_t *nonce_storage;
+	rspamd_mempool_t *mempool;
 	struct rspamd_http_keypair *local_key;
 	struct rspamd_http_header *header;
 	struct http_parser parser;
@@ -82,9 +87,11 @@ static const struct _rspamd_http_magic {
 static const gchar *http_week[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 static const gchar *http_month[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
 							   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
 static const gchar *key_header = "Key";
 static const gchar *date_header = "Date";
-
+//Small fix where adding the `Date` header is not allowed
+static const gchar *jquery_date_header = "Date1";
 #define RSPAMD_HTTP_KEY_ID_LEN 5
 
 #define HTTP_ERROR http_error_quark ()
@@ -427,13 +434,13 @@ rspamd_http_parse_key (GString *data, struct rspamd_http_connection *conn,
 		eq_pos = memchr (data->str, '$', data->len);
 		if(eq_pos!=NULL){
 			//*(eq_pos - 1) = NULL;
-			msg_info("It's inside $ stuff ;) ");
+			msg_info("It's inside $ stuff ");
 			memcpy(temp,data->str,eq_pos-data->str);
 			decoded_id = g_base64_decode(temp,&id_len);
 			decoded_key = g_base64_decode(eq_pos+1,&key_len);
 		}
 		else{
-				msg_info("It's inside = stuff ;) ");
+				msg_info("It's inside = stuff ");
 				eq_pos = memchr (data->str, '=', data->len);
 				if (eq_pos != NULL) {
 					decoded_id = rspamd_decode_base32 (data->str, eq_pos - data->str,
@@ -474,9 +481,17 @@ rspamd_http_check_special_header (struct rspamd_http_connection *conn,
 		priv->msg->date = rspamd_http_parse_date (priv->header->value->str,
 				priv->header->value->len);
 	}
-	else if (g_ascii_strncasecmp (priv->header->name->str, key_header,
+	// Workaround as some browsers don't allows to add 'Date' header 
+	else if (g_ascii_strncasecmp (priv->header->name->str, jquery_date_header,
 			priv->header->name->len) == 0) {
-		//msg_info("Parsing key ! ");
+		priv->msg->date = rspamd_http_parse_date (priv->header->value->str,
+				priv->header->value->len);
+		msg_info("Time: %ld",priv->msg->date);
+	}
+	
+	if (g_ascii_strncasecmp (priv->header->name->str, key_header,
+			priv->header->name->len) == 0) {
+		msg_info("Parsing key ! ");
 		rspamd_http_parse_key (priv->header->value, conn, priv);
 	}
 }
@@ -681,6 +696,7 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 	struct rspamd_http_header *hdr, *hdrtmp;
 	struct http_parser decrypted_parser;
 	struct http_parser_settings decrypted_cb;
+	time_t *curr_time;
 	gint i;
 
 	nonce = msg->body->str;
@@ -688,8 +704,50 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 			rspamd_cryptobox_MACBYTES;
 	dec_len = msg->body->len - rspamd_cryptobox_NONCEBYTES -
 			rspamd_cryptobox_MACBYTES;
-	/* Temporary check ! remove it immediately after checking ! */
-	//conn->cache = FALSE;
+
+	/* To point to the timestamp of the last successful client's message 
+	(should be retrieved from the cache storage)
+	*/
+	if(rspamd_mempool_get_variable(priv->mempool,"client_timestamp")==NULL)
+	{
+		curr_time = rspamd_mempool_alloc (priv->mempool, sizeof (time_t));
+		*curr_time = priv->msg->date;
+		rspamd_mempool_set_variable (priv->mempool,
+								"client_timestamp",
+								curr_time,
+								NULL);
+	}
+	else{
+		curr_time = rspamd_mempool_get_variable (priv->mempool, "client_timestamp");
+	}
+
+	if(*curr_time > priv->msg->date)
+	{
+		msg_err("Possible replay message due to old timestamp, Reject!");
+		return -1;
+	}
+
+	if(rspamd_lru_hash_lookup(priv->nonce_storage,nonce,priv->msg->date)!=NULL)
+	{
+		msg_err("Possible replay message due to repeated nonce, Reject!");
+		return -1;
+	}
+	else
+	{
+		// Assuming ttl parameter in the rspamd_lru_hash_insert in seconds
+		rspamd_lru_hash_insert(priv->nonce_storage,nonce,nonce,priv->msg->date,600);
+		
+		// Difference of these must be in ms
+		if(priv->msg->date - (*curr_time) >= 600000)
+		{
+			*curr_time = priv->msg->date;
+			rspamd_mempool_set_variable (priv->mempool,
+								"client_timestamp",
+								curr_time,
+								NULL);		 
+		}
+	}
+/*
 	if(priv->local_key->nonce == NULL)
 		msg_info("First time");
 	msg_info("Msg Length : %d",msg->body->len);
@@ -712,12 +770,14 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 	msg_err("Client's Public:");
 	for(i=0;i<rspamd_cryptobox_PKBYTES;i++)
 		msg_err("%d",peer_key->pk[i]);
+	*/
 
 	if (conn->cache) {
-		msg_info("At the wrong place");
+		
 		msg_info("Nm: ");
 		for(i=0;i<rspamd_cryptobox_NMBYTES;i++)
 			msg_info("%d",peer_key->nm[i]);
+		
 		if (!rspamd_cryptobox_decrypt_nm_inplace (m, dec_len, nonce,
 				peer_key->nm, m - rspamd_cryptobox_MACBYTES) != 0) {
 			msg_err ("cannot verify encrypted message");
@@ -725,7 +785,6 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 		}
 	}
 	else {
-		msg_err("At the right place");
 		if (!rspamd_cryptobox_decrypt_inplace (m, dec_len, nonce,
 				peer_key->pk, priv->local_key->sk,
 				m - rspamd_cryptobox_MACBYTES) != 0) {
@@ -806,6 +865,7 @@ rspamd_http_on_message_complete (http_parser * parser)
 
 		/* We have keys, so we can decrypt message */
 		peer_key = (struct rspamd_http_keypair *)priv->msg->peer_key;
+		msg_info("Message to be Decrypted");
 		ret = rspamd_http_decrypt_message (conn, priv, peer_key);
 
 		if (ret != 0) {
@@ -2088,6 +2148,7 @@ rspamd_http_router_new (rspamd_http_router_error_handler_t eh,
 
 	new = g_slice_alloc0 (sizeof (struct rspamd_http_connection_router));
 	new->paths = g_hash_table_new (rspamd_strcase_hash, rspamd_strcase_equal);
+	new->nonce_storage = rspamd_lru_hash_new(DEFAULT_CACHE_SIZE,DEFAULT_CACHE_MAXAGE,NULL,NULL);
 	new->conns = NULL;
 	new->error_handler = eh;
 	new->finish_handler = fh;
@@ -2168,6 +2229,11 @@ rspamd_http_router_handle_socket (struct rspamd_http_connection_router *router,
 		rspamd_http_connection_set_key (conn->conn, router->key);
 	}
 
+	if( router->nonce_storage)
+	{
+		rspamd_http_connection_set_nonce_storage (conn->conn,
+		router->nonce_storage);
+	}
 	rspamd_http_connection_read_message (conn->conn, conn, fd, router->ptv,
 		router->ev_base);
 	DL_PREPEND (router->conns, conn);
@@ -2326,6 +2392,15 @@ rspamd_http_connection_set_key (struct rspamd_http_connection *conn,
 	g_assert (key != NULL);
 	REF_RETAIN (kp);
 	priv->local_key = kp;
+}
+
+void
+rspamd_http_connection_set_nonce_storage (struct rspamd_http_connection *conn,
+		gpointer nonce)
+{
+	struct rspamd_http_connection_private *priv = conn->priv;
+	struct rspamd_lru_hash_t *nonce_storage = (struct rspamd_lru_hash_t *)nonce;
+	priv->nonce_storage = nonce_storage;
 }
 
 gboolean
