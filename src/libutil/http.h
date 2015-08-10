@@ -34,6 +34,7 @@
 #include "config.h"
 #include "http_parser.h"
 #include "keypairs_cache.h"
+#include "hash.h"
 
 enum rspamd_http_connection_type {
 	RSPAMD_HTTP_SERVER,
@@ -137,6 +138,7 @@ struct rspamd_http_connection_entry {
 struct rspamd_http_connection_router {
 	struct rspamd_http_connection_entry *conns;
 	GHashTable *paths;
+	rspamd_lru_hash_t *nonce_storage;
 	struct timeval tv;
 	struct timeval *ptv;
 	struct event_base *ev_base;
