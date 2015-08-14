@@ -35,7 +35,7 @@
 #include "http_parser.h"
 #include "keypairs_cache.h"
 #include "hash.h"
-
+#include "mem_pool.h"
 enum rspamd_http_connection_type {
 	RSPAMD_HTTP_SERVER,
 	RSPAMD_HTTP_CLIENT
@@ -119,6 +119,7 @@ struct rspamd_http_connection {
 	rspamd_http_error_handler_t error_handler;
 	rspamd_http_finish_handler_t finish_handler;
 	struct rspamd_keypair_cache *cache;
+	rspamd_mempool_t *mempool;
 	gpointer ud;
 	unsigned opts;
 	enum rspamd_http_connection_type type;
@@ -138,13 +139,13 @@ struct rspamd_http_connection_entry {
 struct rspamd_http_connection_router {
 	struct rspamd_http_connection_entry *conns;
 	GHashTable *paths;
-	rspamd_lru_hash_t *nonce_storage;
 	struct timeval tv;
 	struct timeval *ptv;
 	struct event_base *ev_base;
 	struct rspamd_keypair_cache *cache;
 	gchar *default_fs_path;
 	gpointer key;
+	gpointer nonce_storage;
 	rspamd_http_router_error_handler_t error_handler;
 	rspamd_http_router_finish_handler_t finish_handler;
 };
