@@ -36,8 +36,6 @@
 
 
 #define ENCRYPTED_VERSION " HTTP/1.0"
-#define DEFAULT_CACHE_SIZE 2048
-#define DEFAULT_CACHE_MAXAGE 86400
 
 struct rspamd_http_connection_private {
 	struct _rspamd_http_privbuf {
@@ -48,7 +46,6 @@ struct rspamd_http_connection_private {
 	gboolean encrypted;
 	gpointer peer_key;
 	rspamd_lru_hash_t *nonce_storage;
-	rspamd_mempool_t *mempool;
 	struct rspamd_http_keypair *local_key;
 	struct rspamd_http_header *header;
 	struct http_parser parser;
@@ -449,6 +446,7 @@ rspamd_http_parse_key (GString *data, struct rspamd_http_connection *conn,
 							eq_pos - 1, &key_len);
 				}
 			}
+
 		if (decoded_id != NULL && decoded_key != NULL) {
 			if (id_len >= RSPAMD_HTTP_KEY_ID_LEN  &&
 			key_len >= sizeof (kp->pk)) {
@@ -458,7 +456,6 @@ rspamd_http_parse_key (GString *data, struct rspamd_http_connection *conn,
 					REF_INIT_RETAIN (kp, rspamd_http_keypair_dtor);
 					memcpy (kp->pk, decoded_key, sizeof (kp->pk));
 					priv->msg->peer_key = kp;
-		
 					if (conn->cache && priv->msg->peer_key) {
 						rspamd_keypair_cache_process (conn->cache,
 						priv->local_key, priv->msg->peer_key);
@@ -708,17 +705,17 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 	/* To point to the timestamp of the last successful client's message 
 	(should be retrieved from the cache storage)
 	*/
-	if(rspamd_mempool_get_variable(priv->mempool,"client_timestamp")==NULL)
+	if(rspamd_mempool_get_variable(conn->mempool,"client_timestamp")==NULL)
 	{
-		curr_time = rspamd_mempool_alloc (priv->mempool, sizeof (time_t));
+		curr_time = rspamd_mempool_alloc (conn->mempool, sizeof (time_t));
 		*curr_time = priv->msg->date;
-		rspamd_mempool_set_variable (priv->mempool,
+		rspamd_mempool_set_variable (conn->mempool,
 								"client_timestamp",
 								curr_time,
 								NULL);
 	}
 	else{
-		curr_time = rspamd_mempool_get_variable (priv->mempool, "client_timestamp");
+		curr_time = rspamd_mempool_get_variable (conn->mempool, "client_timestamp");
 	}
 
 	if(*curr_time > priv->msg->date)
@@ -734,14 +731,14 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 	}
 	else
 	{
-		// Assuming ttl parameter in the rspamd_lru_hash_insert in seconds
+		// Assuming ttl parameter in the rspamd_lru_hash_insert is in seconds
 		rspamd_lru_hash_insert(priv->nonce_storage,nonce,nonce,priv->msg->date,600);
 		
 		// Difference of these must be in ms
 		if(priv->msg->date - (*curr_time) >= 600000)
 		{
 			*curr_time = priv->msg->date;
-			rspamd_mempool_set_variable (priv->mempool,
+			rspamd_mempool_set_variable (conn->mempool,
 								"client_timestamp",
 								curr_time,
 								NULL);		 
@@ -1128,7 +1125,7 @@ rspamd_http_connection_new (rspamd_http_body_handler_t body_handler,
 	new->ref = 1;
 	new->finished = FALSE;
 	new->cache = cache;
-
+	new->mempool = rspamd_mempool_new(sizeof(time_t));
 	/* Init priv */
 	priv = g_slice_alloc0 (sizeof (struct rspamd_http_connection_private));
 	new->priv = priv;
@@ -2148,7 +2145,7 @@ rspamd_http_router_new (rspamd_http_router_error_handler_t eh,
 
 	new = g_slice_alloc0 (sizeof (struct rspamd_http_connection_router));
 	new->paths = g_hash_table_new (rspamd_strcase_hash, rspamd_strcase_equal);
-	new->nonce_storage = rspamd_lru_hash_new(DEFAULT_CACHE_SIZE,DEFAULT_CACHE_MAXAGE,NULL,NULL);
+	//new->nonce_storage = rspamd_lru_hash_new(DEFAULT_CACHE_SIZE,DEFAULT_CACHE_MAXAGE,NULL,NULL);
 	new->conns = NULL;
 	new->error_handler = eh;
 	new->finish_handler = fh;
@@ -2192,6 +2189,15 @@ rspamd_http_router_set_key (struct rspamd_http_connection_router *router,
 	REF_RETAIN (kp);
 
 	router->key = key;
+}
+
+void
+rspamd_http_router_set_nonce_storage (struct rspamd_http_connection_router *router,
+		gpointer nonce_storage)
+{
+	rspamd_lru_hash_t  *nonce_lru_hash = (rspamd_lru_hash_t *)nonce_storage;
+
+	router->nonce_storage = nonce_lru_hash;
 }
 
 void
@@ -2263,6 +2269,9 @@ rspamd_http_router_free (struct rspamd_http_connection_router *router)
 		if (router->default_fs_path != NULL) {
 			g_free (router->default_fs_path);
 		}
+		if( router->nonce_storage !=NULL){
+			rspamd_lru_hash_destroy(router->nonce_storage);
+		}
 		g_hash_table_unref (router->paths);
 		g_slice_free1 (sizeof (struct rspamd_http_connection_router), router);
 	}
@@ -2299,6 +2308,7 @@ gpointer
 rspamd_http_connection_gen_key (void)
 {
 	struct rspamd_http_keypair *kp;
+
 
 	kp = g_slice_alloc (sizeof (*kp));
 	REF_INIT_RETAIN (kp, rspamd_http_keypair_dtor);
@@ -2465,12 +2475,12 @@ rspamd_http_connection_return_key (struct rspamd_http_connection_private *priv, 
 	//struct rspamd_http_keypair *kp = (struct rspamd_http_keypair *)rt->key;
 
 	if ((how & RSPAMD_KEYPAIR_PUBKEY)){
-		return &priv->local_key->pk;
+		return priv->local_key->pk;
 	}
 	if ((how & RSPAMD_KEYPAIR_PRIVKEY)){
-		return &priv->local_key->sk;
+		return priv->local_key->sk;
 	}
 	if ((how & RSPAMD_KEYPAIR_ID)) {
-		return &priv->local_key->id;
+		return priv->local_key->id;
 	}
 }
