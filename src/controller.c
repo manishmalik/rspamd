@@ -67,6 +67,10 @@
 
 #define RSPAMD_PBKDF_ID_V1 1
 
+//Nonce Storage
+#define DEFAULT_CACHE_SIZE 2048
+#define DEFAULT_CACHE_MAXAGE 86400
+
 gpointer init_controller_worker (struct rspamd_config *cfg);
 void start_controller_worker (struct rspamd_worker *worker);
 
@@ -1150,8 +1154,7 @@ rspamd_controller_handle_publickey (
 	/*
 	msg_info("PK :");
 	for(i=0;i<rspamd_cryptobox_PKBYTES;i++);
-		msg_info("%d. %d",i,sPublic[i]);
-	
+		msg_info("%d",sPublic[i]);
 	msg_info("SK :");
 	for(i=0;i<rspamd_cryptobox_SKBYTES;i++)
 		msg_info("%d",sSecret[i]);
@@ -1962,6 +1965,7 @@ start_controller_worker (struct rspamd_worker *worker)
 	GHashTableIter iter;
 	gpointer key, value;
 	struct rspamd_keypair_cache *cache;
+	rspamd_lru_hash_t *nonce_storage;
 	gchar *secure_ip;
 
 	ctx->ev_base = rspamd_prepare_worker (worker,
@@ -2068,6 +2072,10 @@ start_controller_worker (struct rspamd_worker *worker)
 	if (ctx->key) {
 		msg_info("Key is set");
 		rspamd_http_router_set_key (ctx->http, ctx->key);
+	}
+	nonce_storage = rspamd_lru_hash_new(DEFAULT_CACHE_SIZE,DEFAULT_CACHE_MAXAGE,NULL,NULL);
+	if(nonce_storage){
+		rspamd_http_router_set_nonce_storage(ctx->http,nonce_storage);
 	}
 
 	g_hash_table_iter_init (&iter, ctx->cfg->c_modules);
