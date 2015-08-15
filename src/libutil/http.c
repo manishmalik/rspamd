@@ -702,9 +702,11 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 	dec_len = msg->body->len - rspamd_cryptobox_NONCEBYTES -
 			rspamd_cryptobox_MACBYTES;
 
-	/* To point to the timestamp of the last successful client's message 
-	(should be retrieved from the cache storage)
+	/*	To point to the timestamp of the last successful client's message 
+		(should be retrieved from the cache storage)
 	*/
+
+	/*	Setting the variable for the first time */
 	if(rspamd_mempool_get_variable(conn->mempool,"client_timestamp")==NULL)
 	{
 		curr_time = rspamd_mempool_alloc (conn->mempool, sizeof (time_t));
@@ -714,16 +716,19 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 								curr_time,
 								NULL);
 	}
+	/*	Retrieving the last stored timestamp from memory pool */
 	else{
 		curr_time = rspamd_mempool_get_variable (conn->mempool, "client_timestamp");
 	}
 
+	/*	If the new message arriving have older timestamp */
 	if(*curr_time > priv->msg->date)
 	{
 		msg_err("Possible replay message due to old timestamp, Reject!");
 		return -1;
 	}
 
+	/*	Looking up the nonce in the hash lookup table */
 	if(rspamd_lru_hash_lookup(priv->nonce_storage,nonce,priv->msg->date)!=NULL)
 	{
 		msg_err("Possible replay message due to repeated nonce, Reject!");
@@ -731,13 +736,22 @@ rspamd_http_decrypt_message (struct rspamd_http_connection *conn,
 	}
 	else
 	{
-		// Assuming ttl parameter in the rspamd_lru_hash_insert is in seconds
+		/*	Assuming ttl parameter in the rspamd_lru_hash_insert is in seconds
+			Storing the new nonce in the nonce_storage
+			Key and Value should be nonce ?
+			timestamp of the new message
+			intended ttl is 10 mins
+		*/
 		rspamd_lru_hash_insert(priv->nonce_storage,nonce,nonce,priv->msg->date,600);
 		
 		// Difference of these must be in ms
 		if(priv->msg->date - (*curr_time) >= 600000)
 		{
 			*curr_time = priv->msg->date;
+			/*	After the interval of 10 mins the current time stamp should
+				have the timestamp equals to the timestamp of the receiving message
+				and is stored in the memory pool for the later retrieval
+			*/
 			rspamd_mempool_set_variable (conn->mempool,
 								"client_timestamp",
 								curr_time,
